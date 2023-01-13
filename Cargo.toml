@@ -1,0 +1,25 @@
+[package]
+name = "atosl-node"
+version = "0.1.0"
+authors = ["cxug@trip.com"]
+license = "ISC"
+edition = "2018"
+exclude = ["index.node"]
+
+[lib]
+crate-type = ["cdylib"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+symbolic-common = "8.5.0"
+symbolic-demangle = "8.5.0"
+anyhow = "1.0.51"
+gimli = "0.26.1"
+memmap = "0.7.0"
+object = "0.28.1"
+
+[dependencies.neon]
+version = "0.10"
+default-features = false
+features = ["napi-6"]
