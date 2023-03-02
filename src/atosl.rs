@@ -15,6 +15,56 @@ pub struct ResponseResult {
     pub result: String,
 }
 
+pub struct GroupAddress {
+    pub load_address: u64,
+    pub addresses: Vec<u64>,
+}
+
+pub fn parse_file_addresses(
+    object_path: &str,
+    addresses: Vec<GroupAddress>,
+    file_offset_type: bool,
+) -> Result<Vec<ResponseResult>, anyhow::Error> {
+    let file = fs::File::open(&object_path)?;
+    let mmap = unsafe { memmap::Mmap::map(&file)? };
+    let object = object::File::parse(&*mmap)?;
+    let object_filename = Path::new(&object_path)
+        .file_name()
+        .ok_or(anyhow!("file name error"))?
+        .to_str()
+        .ok_or(anyhow!("file name error(to_str)"))?;
+    let mut results: Vec<ResponseResult> = Vec::new();
+    addresses.into_iter().for_each(|grouped| {
+        let result: Result<Vec<ResponseResult>>;
+        if is_object_dwarf(&object) {
+            result = dwarf_symbolize_addresses(
+                &object,
+                object_filename,
+                grouped.load_address,
+                grouped.addresses,
+                file_offset_type,
+            );
+        } else {
+            result = symbol_symbolize_addresses(
+                &object,
+                object_filename,
+                grouped.load_address,
+                grouped.addresses,
+                file_offset_type,
+            );
+        }
+        match result {
+            Ok(r) => {
+                results.extend(r);
+            }
+            Err(err) => {
+                println!("Error: {}", err);
+            }
+        }
+    });
+    Ok(results)
+}
+
 pub fn print_addresses(
     object_path: &str,
     load_address: u64,
@@ -37,7 +87,7 @@ pub fn print_addresses(
             load_address,
             addresses,
             file_offset_type,
-        )
+        );
     } else {
         return symbol_symbolize_addresses(
             &object,
@@ -45,7 +95,7 @@ pub fn print_addresses(
             load_address,
             addresses,
             file_offset_type,
-        )
+        );
     }
 }
 
@@ -64,7 +114,7 @@ fn symbol_symbolize_addresses(
     addresses: Vec<u64>,
     file_offset_type: bool,
 ) -> Result<Vec<ResponseResult>, anyhow::Error> {
-    let mut vec_result :Vec<ResponseResult>= Vec::new();
+    let mut vec_result: Vec<ResponseResult> = Vec::new();
     // find vmaddr for __TEXT segment
     let mut segments = object.segments();
     let mut text_vmaddr = 0;
@@ -78,7 +128,6 @@ fn symbol_symbolize_addresses(
     }
 
     for address in addresses {
-
         let symbol_result = symbol_symbolize_address(
             &object,
             object_filename,
@@ -95,6 +144,27 @@ fn symbol_symbolize_addresses(
     Ok(vec_result)
 }
 
+fn get_search_address(
+    address: u64,
+    load_address: u64,
+    text_vmaddr: u64,
+    offset: bool,
+) -> Result<u64, anyhow::Error> {
+    return match address.checked_sub(load_address) {
+        Some(subed_address) => {
+            if offset {
+                return match subed_address.checked_add(text_vmaddr) {
+                    Some(d) => Ok(d),
+                    None => Err(anyhow!("add text_vmaddr overflow")),
+                };
+            } else {
+                Ok(address)
+            }
+        }
+        None => Err(anyhow!("sub load_address overflow")),
+    };
+}
+
 fn symbol_symbolize_address(
     object: &object::File,
     object_filename: &str,
@@ -103,12 +173,11 @@ fn symbol_symbolize_address(
     text_vmaddr: u64,
     file_offset_type: bool,
 ) -> Result<ResponseResult, anyhow::Error> {
-    let search_address: u64 = if file_offset_type {
-        address - load_address
-    } else {
-        address - load_address + text_vmaddr
-    };
-
+    let search_address: u64 =
+        match get_search_address(address, load_address, text_vmaddr, file_offset_type) {
+            Ok(d) => d,
+            Err(err) => return Err(err),
+        };
     let symbols = object.symbol_map();
     let found_symbol = symbols.get(search_address);
 
@@ -118,7 +187,7 @@ fn symbol_symbolize_address(
         let offset = search_address - found_symbol.address();
         let demangled_name = demangle::demangle_symbol(found_symbol.name());
         let symbolize_result = format!("{} (in {}) + {}", demangled_name, object_filename, offset);
-        return Ok(ResponseResult{
+        return Ok(ResponseResult {
             address,
             result: symbolize_result,
         });
@@ -134,7 +203,7 @@ fn dwarf_symbolize_addresses(
     addresses: Vec<u64>,
     file_offset_type: bool,
 ) -> Result<Vec<ResponseResult>, anyhow::Error> {
-    let mut vec_result :Vec<ResponseResult>= Vec::new();
+    let mut vec_result: Vec<ResponseResult> = Vec::new();
     let endian = if object.is_little_endian() {
         gimli::RunTimeEndian::Little
     } else {
@@ -164,7 +233,6 @@ fn dwarf_symbolize_addresses(
     }
 
     for address in addresses {
-
         let symbol_result = dwarf_symbolize_address(
             &dwarf,
             object_filename,
@@ -174,7 +242,10 @@ fn dwarf_symbolize_addresses(
             file_offset_type,
         );
         match symbol_result {
-            Ok(symbol) => println!("{}", symbol),
+            Ok(symbol) => vec_result.push(ResponseResult {
+                address,
+                result: symbol,
+            }),
             Err(_) => {
                 // downgrade to symbol table search
                 let symbol_result = symbol_symbolize_address(
@@ -203,11 +274,11 @@ fn dwarf_symbolize_address(
     text_vmaddr: u64,
     file_offset_type: bool,
 ) -> Result<String, anyhow::Error> {
-    let search_address: u64 = if file_offset_type {
-        address - load_address
-    } else {
-        address - load_address + text_vmaddr
-    };
+    let search_address: u64 =
+        match get_search_address(address, load_address, text_vmaddr, file_offset_type) {
+            Ok(d) => d,
+            Err(err) => return Err(err),
+        };
 
     // aranges
     let mut debug_info_offset: Option<DebugInfoOffset> = None;
